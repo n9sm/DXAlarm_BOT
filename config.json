@@ -1,0 +1,21 @@
+{
+  "telegram_token": "80042XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "chat_id": "340XXXXX",
+  "targets": [
+    {
+      "call": "FP5KE",
+      "bands": [],
+      "modes": []
+    },
+    {
+      "call": "V6D",
+      "bands": [],
+      "modes": []
+    }
+  ],
+  "dxcluster_host": "ve7cc.net",
+  "dxcluster_port": 7373,
+  "dxcluster_use_telnet": true,
+  "dedup_minutes": 5,
+  "dxcluster_call": "N0CALL"
+}
