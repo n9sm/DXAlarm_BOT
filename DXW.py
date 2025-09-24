@@ -5,9 +5,18 @@ import json
 import telnetlib
 import requests
 import re
+import logging
 from datetime import datetime, timedelta
 
 CONFIG_FILE = "config.json"
+
+# --- Logging ---
+logging.basicConfig(
+    filename="dxbot.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 # dedup in memory
 last_spots = {}
@@ -28,7 +37,7 @@ def send_telegram(token, chat_ids, text):
                 timeout=10
             )
         except Exception as e:
-            print(f"[Telegram Error] chat_id {chat_id}: {e}")
+            logging.error(f"Telegram Error chat_id {chat_id}: {e}")
 
 def normalize_call(c):
     return re.sub(r'[^A-Z0-9/]', '', c.upper())
@@ -99,7 +108,7 @@ def matches_target(parsed, target):
     return True
 
 def should_send(call, dedup_min):
-    """Verifies how much time elapsed since last message for given call"""
+    # --- Verifies how much time elapsed since last message for given call ---
     now = datetime.utcnow()
     last_time = last_spots.get(call)
     if last_time and now - last_time < timedelta(minutes=dedup_min):
@@ -114,49 +123,69 @@ def dxcluster_listener(cfg):
     token = cfg["telegram_token"]
     chat = cfg["chat_id"]
     targets = cfg["targets"]
-    dedup_min = int(cfg.get("dedup_minutes", 30))  # <-- preso dal JSON
+    dedup_min = int(cfg.get("dedup_minutes", 30))
     mycall = cfg.get("dxcluster_call", "NOCALL")
 
     while True:
         try:
-            print(f"Connecting to DX cluster {host}:{port} ...")
+            logging.info(f"Connecting to DX cluster {host}:{port} ...")
             tn = telnetlib.Telnet(host, port, timeout=60)
             tn.write((mycall + "\n").encode("utf-8"))
             time.sleep(1)
             for cmd in [b"set/skimmer\n", b"set/ft8\n", b"set/announce on\n", b"set/ve7cc 1\n"]:
                 tn.write(cmd)
 
+            # --- watchdog + keepalive ---
+            last_activity = datetime.utcnow()
+            keepalive_interval = timedelta(minutes=10)   # sends a command every 10min
+            max_inactive = timedelta(minutes=15)        # if 15min with no spots -> reconnect
+
             while True:
-                line = tn.read_until(b"\n", timeout=300)
-                if not line:
-                    print("Timeout lettura, riattacco...")
+                line = tn.read_until(b"\n", timeout=60)
+                now = datetime.utcnow()
+
+                if line:
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if not text:
+                        continue
+                    last_activity = now
+
+                    if text.startswith("CC"):
+                        parsed = parse_ve7cc_line(text)
+                        if parsed:
+                            for target in targets:
+                                if matches_target(parsed, target):
+                                    call_n = normalize_call(parsed["call"])
+                                    if not should_send(call_n, dedup_min):
+                                        continue
+                                    msg = (
+                                        f"🛰️ <b>Spot DXCluster</b>\n"
+                                        f"Station: <b>{parsed['call']}</b>\n"
+                                        f"Freq: {parsed['freq']} kHz ({parsed['band']})\n"
+                                        f"Mode: {parsed['mode']}\n"
+                                        f"Date/Time: {parsed['datetime']}\n"
+                                        f"Comment: {parsed['info']}\n"
+                                        f"Spotter: {parsed['spotter']}"
+                                    )
+                                    logging.info(f"Sending Telegram alert for {parsed['call']} {parsed['freq']}")
+                                    send_telegram(token, chat, msg)
+                    else:
+                        logging.debug(f"[DX RAW] {text}")
+
+                # --- KEEPALIVE ---
+                if now - last_activity >= keepalive_interval:
+                    logging.info("Sending keepalive command to cluster...")
+                    tn.write(b"sh/dx\n")
+                    last_activity = now
+
+                # --- WATCHDOG ---
+                if now - last_activity >= max_inactive:
+                    logging.warning("No activity for 15 minutes, reconnecting...")
+                    tn.close()
                     break
-                text = line.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                if text.startswith("CC"):
-                    parsed = parse_ve7cc_line(text)
-                    if parsed:
-                        for target in targets:
-                            if matches_target(parsed, target):
-                                call_n = normalize_call(parsed["call"])
-                                if not should_send(call_n, dedup_min):
-                                    continue
-                                msg = (
-                                    f"🛰️ <b>Spot DXCluster</b>\n"
-                                    f"Station: <b>{parsed['call']}</b>\n"
-                                    f"Freq: {parsed['freq']} kHz ({parsed['band']})\n"
-                                    f"Mode: {parsed['mode']}\n"
-                                    f"Date/Time: {parsed['datetime']}\n"
-                                    f"Comment: {parsed['info']}\n"
-                                    f"Spotter: {parsed['spotter']}"
-                                )
-                                send_telegram(token, chat, msg)
-                else:
-                    print(f"[DX RAW] {text}")
 
         except Exception as e:
-            print("Errore DXCluster:", e)
+            logging.error(f"DXCluster Error: {e}")
             time.sleep(10)
 
 # --- Main ---
