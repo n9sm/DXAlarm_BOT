@@ -108,7 +108,7 @@ def matches_target(parsed, target):
     return True
 
 def should_send(call, dedup_min):
-    # --- Verifies how much time elapsed since last message for given call ---
+    """Verifies how much time elapsed since last message for given call"""
     now = datetime.utcnow()
     last_time = last_spots.get(call)
     if last_time and now - last_time < timedelta(minutes=dedup_min):
